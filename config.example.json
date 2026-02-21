@@ -1,0 +1,41 @@
+{
+  "daily_limit_seconds": 1800,
+  "reset_time": "00:00",
+  "override_delay_seconds": 300,
+  "override_grant_seconds": 600,
+  "blocked_sites": [
+    {
+      "domain": "youtube.com",
+      "subdomains": ["www", "m"]
+    },
+    {
+      "domain": "reddit.com",
+      "subdomains": ["www", "old", "i", "new"]
+    },
+    {
+      "domain": "twitter.com",
+      "subdomains": ["www", "mobile"]
+    },
+    {
+      "domain": "x.com",
+      "subdomains": ["www"]
+    },
+    {
+      "domain": "instagram.com",
+      "subdomains": ["www"]
+    },
+    {
+      "domain": "tiktok.com",
+      "subdomains": ["www"]
+    },
+    {
+      "domain": "netflix.com",
+      "subdomains": ["www"]
+    },
+    {
+      "domain": "facebook.com",
+      "subdomains": ["www", "m"]
+    }
+  ],
+  "launch_at_login": false
+}

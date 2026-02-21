@@ -1,0 +1,74 @@
+[project]
+name = "social-media-limiter"
+version = "0.1.0"
+description = "macOS menu bar app to limit time on addictive social media sites"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "dropkick44" }]
+keywords = ["macos", "productivity", "screen-time", "social-media", "menu-bar"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: MacOS X",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    "rumps>=0.4.0",
+    "pyobjc-framework-Cocoa>=10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.2.0",
+    "pre-commit>=3.6.0",
+]
+
+[project.scripts]
+social-limiter = "src.app:main"
+
+[project.urls]
+Homepage = "https://github.com/dropkick44/social_media_limiter"
+Repository = "https://github.com/dropkick44/social_media_limiter"
+Issues = "https://github.com/dropkick44/social_media_limiter/issues"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
