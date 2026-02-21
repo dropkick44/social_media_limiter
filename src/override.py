@@ -1,7 +1,7 @@
 """Override countdown window for emergency access."""
 
+import logging
 import threading
-import time
 from typing import Callable
 
 import AppKit
@@ -9,9 +9,14 @@ import objc
 from Foundation import NSObject
 from PyObjCTools import AppHelper
 
+logger = logging.getLogger(__name__)
+
 
 class CountdownWindowController(NSObject):
-    """Controller for the countdown window."""
+    """Controller for the countdown window.
+
+    Thread-safe implementation using locks for shared state.
+    """
 
     window = objc.ivar()
     label = objc.ivar()
@@ -19,10 +24,6 @@ class CountdownWindowController(NSObject):
     cancel_button = objc.ivar()
     remaining_seconds = objc.ivar()
     total_seconds = objc.ivar()
-    timer = objc.ivar()
-    on_complete = objc.ivar()
-    on_cancel = objc.ivar()
-    cancelled = objc.ivar()
 
     def initWithSeconds_onComplete_onCancel_(
         self, seconds: int, on_complete: Callable, on_cancel: Callable
@@ -33,10 +34,16 @@ class CountdownWindowController(NSObject):
 
         self.remaining_seconds = seconds
         self.total_seconds = seconds
-        self.on_complete = on_complete
-        self.on_cancel = on_cancel
-        self.cancelled = False
-        self.timer = None
+
+        # Store callbacks in Python attributes (not objc.ivar) to avoid reference issues
+        self._on_complete = on_complete
+        self._on_cancel = on_cancel
+
+        # Thread safety
+        self._lock = threading.Lock()
+        self._cancelled = False
+        self._timer = None
+        self._closed = False
 
         self._create_window()
         return self
@@ -136,51 +143,105 @@ class CountdownWindowController(NSObject):
         self._start_timer()
 
     def close(self):
-        """Close the window and stop timer."""
-        if self.timer:
-            self.timer.cancel()
-            self.timer = None
-        self.window.close()
+        """Close the window and stop timer. Thread-safe."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+
+            if self._timer:
+                self._timer.cancel()
+                self._timer = None
+
+        # Close window on main thread
+        if self.window:
+            self.window.close()
+
+    def cleanup(self):
+        """Clear callbacks to prevent memory leaks."""
+        self._on_complete = None
+        self._on_cancel = None
 
     def _start_timer(self):
         """Start the countdown timer."""
         self._tick()
 
     def _tick(self):
-        """Update countdown every second."""
-        if self.cancelled:
-            return
+        """Update countdown every second. Called on main thread."""
+        with self._lock:
+            if self._cancelled or self._closed:
+                return
+
+            if self.remaining_seconds <= 0:
+                # Countdown complete
+                callback = self._on_complete
+                self._on_complete = None
+                self._on_cancel = None
 
         if self.remaining_seconds <= 0:
             self.close()
-            if self.on_complete:
-                self.on_complete()
+            if callback:
+                try:
+                    callback()
+                except Exception as e:
+                    logger.error(f"Error in on_complete callback: {e}")
+            _clear_controller()
             return
 
-        # Update UI
+        # Update UI (must be on main thread)
         self.label.setStringValue_(self._format_time())
         self.progress.setDoubleValue_(self.remaining_seconds)
 
         # Schedule next tick
-        self.remaining_seconds -= 1
-        self.timer = threading.Timer(1.0, self._schedule_tick)
-        self.timer.start()
+        with self._lock:
+            if self._cancelled or self._closed:
+                return
+            self.remaining_seconds -= 1
+            self._timer = threading.Timer(1.0, self._schedule_tick)
+            self._timer.start()
 
     def _schedule_tick(self):
         """Schedule tick on main thread."""
+        with self._lock:
+            if self._cancelled or self._closed:
+                return
         AppHelper.callAfter(self._tick)
 
     @objc.python_method
     def cancelClicked_(self, sender):
-        """Handle cancel button click."""
-        self.cancelled = True
+        """Handle cancel button click. Called on main thread."""
+        callback = None
+        with self._lock:
+            if self._cancelled or self._closed:
+                return
+            self._cancelled = True
+            callback = self._on_cancel
+            self._on_complete = None
+            self._on_cancel = None
+
         self.close()
-        if self.on_cancel:
-            self.on_cancel()
+
+        if callback:
+            try:
+                callback()
+            except Exception as e:
+                logger.error(f"Error in on_cancel callback: {e}")
+
+        _clear_controller()
 
 
 # Global reference to keep controller alive
 _current_controller = None
+_controller_lock = threading.Lock()
+
+
+def _clear_controller():
+    """Clear the global controller reference."""
+    global _current_controller
+    with _controller_lock:
+        if _current_controller:
+            _current_controller.cleanup()
+        _current_controller = None
 
 
 def show_countdown_window(
@@ -198,24 +259,29 @@ def show_countdown_window(
     """
     global _current_controller
 
-    # Close any existing window
-    if _current_controller:
-        _current_controller.close()
+    with _controller_lock:
+        # Close any existing window
+        if _current_controller:
+            _current_controller.close()
+            _current_controller.cleanup()
+            _current_controller = None
 
-    _current_controller = (
-        CountdownWindowController.alloc().initWithSeconds_onComplete_onCancel_(
-            seconds, on_complete, on_cancel
+        _current_controller = (
+            CountdownWindowController.alloc().initWithSeconds_onComplete_onCancel_(
+                seconds, on_complete, on_cancel
+            )
         )
-    )
-    _current_controller.show()
+        _current_controller.show()
 
-    return _current_controller
+        return _current_controller
 
 
 def close_countdown_window():
     """Close the countdown window if open."""
     global _current_controller
 
-    if _current_controller:
-        _current_controller.close()
-        _current_controller = None
+    with _controller_lock:
+        if _current_controller:
+            _current_controller.close()
+            _current_controller.cleanup()
+            _current_controller = None

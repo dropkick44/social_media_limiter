@@ -1,8 +1,12 @@
 """Hosts file manipulation for blocking sites."""
 
+import logging
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 HOSTS_PATH = Path("/etc/hosts")
 BLOCK_START_MARKER = "# -- SocialLimiter Start --"
@@ -84,17 +88,20 @@ def get_currently_blocked_domains() -> list[str]:
 
 def write_hosts_with_sudo(new_content: str) -> bool:
     """Write new hosts file content using sudo via osascript."""
-    # Write to temp file first
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".hosts") as f:
-        f.write(new_content)
-        temp_path = f.name
-
-    # Use osascript to run sudo command with password prompt
-    script = f'''
-    do shell script "cp {temp_path} /etc/hosts && rm {temp_path}" with administrator privileges
-    '''
-
+    temp_path = None
     try:
+        # Write to temp file first
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".hosts") as f:
+            f.write(new_content)
+            temp_path = f.name
+
+        # Use osascript to run sudo command with password prompt
+        # Use shlex.quote to prevent command injection
+        safe_temp_path = shlex.quote(temp_path)
+        script = f'''
+        do shell script "cp {safe_temp_path} /etc/hosts" with administrator privileges
+        '''
+
         subprocess.run(
             ["osascript", "-e", script],
             check=True,
@@ -104,9 +111,15 @@ def write_hosts_with_sudo(new_content: str) -> bool:
         return True
     except subprocess.CalledProcessError:
         # User cancelled or auth failed
-        # Clean up temp file
-        Path(temp_path).unlink(missing_ok=True)
+        logger.warning("Failed to write hosts file - user cancelled or auth failed")
         return False
+    except OSError as e:
+        logger.error(f"Failed to write temp file: {e}")
+        return False
+    finally:
+        # Always clean up temp file
+        if temp_path:
+            Path(temp_path).unlink(missing_ok=True)
 
 
 def flush_dns_cache() -> bool:
@@ -127,15 +140,20 @@ def flush_dns_cache() -> bool:
         return False
 
 
-def block_sites(domains: list[str]) -> bool:
-    """Add domains to the hosts file to block them."""
+def block_sites(domains: list[str]) -> tuple[bool, bool]:
+    """Add domains to the hosts file to block them.
+
+    Returns:
+        Tuple of (hosts_modified, dns_flushed). Both should be True for full success.
+    """
     if not domains:
-        return True
+        return True, True
 
     try:
         current_content = read_hosts_file()
     except PermissionError:
-        return False
+        logger.error("Permission denied reading hosts file")
+        return False, False
 
     # Remove any existing blocks first
     clean_content = remove_existing_blocks(current_content)
@@ -146,24 +164,31 @@ def block_sites(domains: list[str]) -> bool:
 
     # Write with sudo
     if not write_hosts_with_sudo(new_content):
-        return False
+        return False, False
 
     # Flush DNS cache
-    flush_dns_cache()
+    dns_flushed = flush_dns_cache()
+    if not dns_flushed:
+        logger.warning("DNS cache flush failed - blocking may be delayed")
 
-    return True
+    return True, dns_flushed
 
 
-def unblock_sites() -> bool:
-    """Remove all SocialLimiter blocks from the hosts file."""
+def unblock_sites() -> tuple[bool, bool]:
+    """Remove all SocialLimiter blocks from the hosts file.
+
+    Returns:
+        Tuple of (hosts_modified, dns_flushed). Both should be True for full success.
+    """
     try:
         current_content = read_hosts_file()
     except PermissionError:
-        return False
+        logger.error("Permission denied reading hosts file")
+        return False, False
 
     # Check if there's anything to remove
     if BLOCK_START_MARKER not in current_content:
-        return True
+        return True, True
 
     # Remove blocks
     clean_content = remove_existing_blocks(current_content)
@@ -171,9 +196,11 @@ def unblock_sites() -> bool:
 
     # Write with sudo
     if not write_hosts_with_sudo(new_content):
-        return False
+        return False, False
 
     # Flush DNS cache
-    flush_dns_cache()
+    dns_flushed = flush_dns_cache()
+    if not dns_flushed:
+        logger.warning("DNS cache flush failed - unblocking may be delayed")
 
-    return True
+    return True, dns_flushed

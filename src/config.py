@@ -1,9 +1,40 @@
 """Configuration management for Social Media Limiter."""
 
+import fcntl
 import json
+import logging
 import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# File lock for thread-safe config operations
+_config_lock_fd = None
+
+
+def _get_lock_path() -> Path:
+    """Get the lock file path."""
+    return get_config_dir() / "config.lock"
+
+
+def _acquire_lock() -> int:
+    """Acquire exclusive lock for config file operations."""
+    global _config_lock_fd
+    lock_path = _get_lock_path()
+    _config_lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+    fcntl.flock(_config_lock_fd, fcntl.LOCK_EX)
+    return _config_lock_fd
+
+
+def _release_lock() -> None:
+    """Release the config file lock."""
+    global _config_lock_fd
+    if _config_lock_fd is not None:
+        fcntl.flock(_config_lock_fd, fcntl.LOCK_UN)
+        os.close(_config_lock_fd)
+        _config_lock_fd = None
 
 
 @dataclass
@@ -85,58 +116,125 @@ def get_config_path() -> Path:
     return get_config_dir() / "config.json"
 
 
+def _get_default_config() -> Config:
+    """Return default config with common sites."""
+    return Config(
+        blocked_sites=[
+            BlockedSite("youtube.com", ["www", "m"]),
+            BlockedSite("reddit.com", ["www", "old", "i", "new"]),
+            BlockedSite("twitter.com", ["www", "mobile"]),
+            BlockedSite("x.com", ["www"]),
+            BlockedSite("instagram.com", ["www"]),
+            BlockedSite("tiktok.com", ["www"]),
+            BlockedSite("facebook.com", ["www", "m"]),
+        ]
+    )
+
+
 def load_config() -> Config:
-    """Load configuration from file, or return defaults if not found."""
+    """Load configuration from file, or return defaults if not found.
+
+    Thread-safe with file locking.
+    """
     config_path = get_config_path()
 
-    if not config_path.exists():
-        # Return default config with common sites
-        return Config(
-            blocked_sites=[
-                BlockedSite("youtube.com", ["www", "m"]),
-                BlockedSite("reddit.com", ["www", "old", "i", "new"]),
-                BlockedSite("twitter.com", ["www", "mobile"]),
-                BlockedSite("x.com", ["www"]),
-                BlockedSite("instagram.com", ["www"]),
-                BlockedSite("tiktok.com", ["www"]),
-                BlockedSite("facebook.com", ["www", "m"]),
-            ]
-        )
+    _acquire_lock()
+    try:
+        if not config_path.exists():
+            return _get_default_config()
 
-    with open(config_path) as f:
-        data = json.load(f)
+        try:
+            with open(config_path) as f:
+                data = json.load(f)
+            return Config.from_dict(data)
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            logger.warning(f"Corrupted config file, using defaults: {e}")
+            return _get_default_config()
+    finally:
+        _release_lock()
 
-    return Config.from_dict(data)
+
+def _save_config_unlocked(config: Config) -> None:
+    """Save config to file atomically. Must be called with lock held."""
+    config_path = get_config_path()
+    dir_path = config_path.parent
+
+    # Write to temp file first, then atomically rename
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=dir_path, delete=False, suffix=".tmp"
+        ) as f:
+            json.dump(config.to_dict(), f, indent=2)
+            temp_path = f.name
+
+        # Atomic rename on POSIX
+        os.rename(temp_path, config_path)
+    except OSError as e:
+        logger.error(f"Failed to save config: {e}")
+        # Clean up temp file if it exists
+        if "temp_path" in locals():
+            Path(temp_path).unlink(missing_ok=True)
+        raise
 
 
 def save_config(config: Config) -> None:
-    """Save configuration to file."""
-    config_path = get_config_path()
-
-    with open(config_path, "w") as f:
-        json.dump(config.to_dict(), f, indent=2)
+    """Save configuration to file atomically. Thread-safe with file locking."""
+    _acquire_lock()
+    try:
+        _save_config_unlocked(config)
+    finally:
+        _release_lock()
 
 
 def add_blocked_site(domain: str, subdomains: list[str] | None = None) -> Config:
-    """Add a site to the blocked list."""
-    config = load_config()
+    """Add a site to the blocked list. Thread-safe."""
+    _acquire_lock()
+    try:
+        config_path = get_config_path()
 
-    # Check if already exists
-    for site in config.blocked_sites:
-        if site.domain == domain:
-            return config
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    data = json.load(f)
+                config = Config.from_dict(data)
+            except (json.JSONDecodeError, KeyError, ValueError):
+                config = _get_default_config()
+        else:
+            config = _get_default_config()
 
-    new_site = BlockedSite(domain, subdomains or ["www"])
-    config.blocked_sites.append(new_site)
-    save_config(config)
+        # Check if already exists
+        for site in config.blocked_sites:
+            if site.domain == domain:
+                return config
 
-    return config
+        new_site = BlockedSite(domain, subdomains or ["www"])
+        config.blocked_sites.append(new_site)
+        _save_config_unlocked(config)
+
+        return config
+    finally:
+        _release_lock()
 
 
 def remove_blocked_site(domain: str) -> Config:
-    """Remove a site from the blocked list."""
-    config = load_config()
-    config.blocked_sites = [site for site in config.blocked_sites if site.domain != domain]
-    save_config(config)
+    """Remove a site from the blocked list. Thread-safe."""
+    _acquire_lock()
+    try:
+        config_path = get_config_path()
 
-    return config
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    data = json.load(f)
+                config = Config.from_dict(data)
+            except (json.JSONDecodeError, KeyError, ValueError):
+                config = _get_default_config()
+        else:
+            config = _get_default_config()
+
+        config.blocked_sites = [site for site in config.blocked_sites if site.domain != domain]
+        _save_config_unlocked(config)
+
+        return config
+    finally:
+        _release_lock()

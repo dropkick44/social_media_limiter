@@ -1,5 +1,8 @@
 """Main menu bar application for Social Media Limiter."""
 
+import logging
+import re
+
 import rumps
 
 from .blocker import block_sites, is_blocking_active, unblock_sites
@@ -12,9 +15,10 @@ from .state import (
     get_override_remaining_seconds,
     is_override_active,
     load_state,
-    save_state,
 )
 from .tracker import check_current_activity
+
+logger = logging.getLogger(__name__)
 
 # Menu bar icons (using emoji for prototype - replace with proper icons later)
 ICON_ACTIVE = "●"  # Green - time remaining
@@ -23,6 +27,44 @@ ICON_BLOCKED = "○"  # Red - blocked
 ICON_OVERRIDE = "⏳"  # Hourglass - override countdown
 
 WARNING_THRESHOLD_SECONDS = 600  # 10 minutes
+
+# Domain validation regex - allows valid domain characters only
+# Matches: example.com, sub.example.com, my-site.co.uk
+# Rejects: newlines, spaces, special characters that could corrupt hosts file
+DOMAIN_REGEX = re.compile(
+    r"^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+)
+
+# Reasonable limits for settings
+MAX_DAILY_LIMIT_MINUTES = 1440  # 24 hours
+MIN_DAILY_LIMIT_MINUTES = 1
+
+
+def is_valid_domain(domain: str) -> bool:
+    """Validate a domain name for safety and correctness.
+
+    Prevents hosts file injection via newlines, spaces, or special characters.
+    """
+    if not domain:
+        return False
+
+    # Check length (max 253 chars for DNS)
+    if len(domain) > 253:
+        return False
+
+    # Must have at least one dot
+    if "." not in domain:
+        return False
+
+    # Check against regex
+    if not DOMAIN_REGEX.match(domain):
+        return False
+
+    # Additional safety: no control characters or whitespace
+    if any(c.isspace() or ord(c) < 32 for c in domain):
+        return False
+
+    return True
 
 
 class SocialLimiterApp(rumps.App):
@@ -86,7 +128,7 @@ class SocialLimiterApp(rumps.App):
 
         for site in self.config.blocked_sites:
             item = rumps.MenuItem(site.domain, callback=self._on_toggle_site)
-            item.state = True  # Checkmark shows it's blocked
+            item.state = 1  # Checkmark shows it's blocked (use int, not bool)
             self.blocked_sites_menu.add(item)
 
     def _update_display(self):
@@ -102,7 +144,7 @@ class SocialLimiterApp(rumps.App):
                 self.time_remaining_item.title = f"⏳ Override: {format_time(override_remaining)}"
                 self.title = ICON_OVERRIDE
             else:
-                self.time_remaining_item.title = f"○ Blocked (0:00 remaining)"
+                self.time_remaining_item.title = "○ Blocked (0:00 remaining)"
                 self.title = ICON_BLOCKED
             self.override_item.set_callback(self._on_request_override)
         elif self.state.remaining_seconds <= WARNING_THRESHOLD_SECONDS:
@@ -117,7 +159,7 @@ class SocialLimiterApp(rumps.App):
         # Update usage
         daily_limit = self.config.daily_limit_seconds
         used = daily_limit - self.state.remaining_seconds
-        self.usage_item.title = f"Today's usage: {format_time(used)}"
+        self.usage_item.title = f"Today's usage: {format_time(max(0, used))}"
 
     def _sync_blocking_state(self):
         """Ensure /etc/hosts matches our state."""
@@ -126,37 +168,48 @@ class SocialLimiterApp(rumps.App):
 
         if should_block and not currently_blocking:
             domains = self.config.get_all_blocked_domains()
-            block_sites(domains)
+            hosts_ok, dns_ok = block_sites(domains)
+            if not hosts_ok:
+                logger.warning("Failed to modify hosts file for blocking")
+            elif not dns_ok:
+                logger.warning("Hosts modified but DNS flush failed")
         elif not should_block and currently_blocking:
-            unblock_sites()
+            hosts_ok, dns_ok = unblock_sites()
+            if not hosts_ok:
+                logger.warning("Failed to modify hosts file for unblocking")
+            elif not dns_ok:
+                logger.warning("Hosts modified but DNS flush failed")
 
     def _on_tick(self, _):
         """Called every 5 seconds to track time."""
-        self.state = load_state()
-        self.config = load_config()
+        try:
+            self.state = load_state()
+            self.config = load_config()
 
-        # Check if override expired
-        if self.state.is_blocked and not is_override_active():
-            self._sync_blocking_state()
+            # Check if override expired
+            if self.state.is_blocked and not is_override_active():
+                self._sync_blocking_state()
 
-        # If not blocked (or override active), check browser activity
-        if not self.state.is_blocked or is_override_active():
-            blocked_domains = self.config.get_all_blocked_domains()
+            # If not blocked (or override active), check browser activity
+            if not self.state.is_blocked or is_override_active():
+                blocked_domains = self.config.get_all_blocked_domains()
 
-            if check_current_activity(blocked_domains):
-                # User is on a blocked site, decrement time
-                self.state = decrement_time(5)
+                if check_current_activity(blocked_domains):
+                    # User is on a blocked site, decrement time
+                    self.state = decrement_time(5)
 
-                # Check if we just ran out of time
-                if self.state.is_blocked and not is_override_active():
-                    self._sync_blocking_state()
-                    rumps.notification(
-                        title="Social Media Limiter",
-                        subtitle="Time's up!",
-                        message="Your daily limit has been reached. Sites are now blocked.",
-                    )
+                    # Check if we just ran out of time
+                    if self.state.is_blocked and not is_override_active():
+                        self._sync_blocking_state()
+                        rumps.notification(
+                            title="Social Media Limiter",
+                            subtitle="Time's up!",
+                            message="Your daily limit has been reached. Sites are now blocked.",
+                        )
 
-        self._update_display()
+            self._update_display()
+        except Exception as e:
+            logger.error(f"Error in tick handler: {e}")
 
     def _on_add_site(self, _):
         """Handle Add Site menu item."""
@@ -172,18 +225,24 @@ class SocialLimiterApp(rumps.App):
         if response.clicked and response.text.strip():
             domain = response.text.strip().lower()
 
-            # Basic validation
-            if "." not in domain:
-                rumps.alert(
-                    title="Invalid Domain",
-                    message="Please enter a valid domain (e.g., youtube.com)",
-                )
-                return
-
             # Remove http/https/www if present
             domain = domain.replace("https://", "").replace("http://", "")
-            domain = domain.replace("www.", "")
+            if domain.startswith("www."):
+                domain = domain[4:]
             domain = domain.split("/")[0]  # Remove path
+            domain = domain.split("?")[0]  # Remove query string
+            domain = domain.split("#")[0]  # Remove fragment
+
+            # Validate domain to prevent hosts file injection
+            if not is_valid_domain(domain):
+                rumps.alert(
+                    title="Invalid Domain",
+                    message=(
+                        "Please enter a valid domain (e.g., youtube.com).\n\n"
+                        "Domain must contain only letters, numbers, hyphens, and dots."
+                    ),
+                )
+                return
 
             self.config = add_blocked_site(domain)
             self._update_blocked_sites_menu()
@@ -276,7 +335,7 @@ class SocialLimiterApp(rumps.App):
 
         response = rumps.Window(
             title="Daily Time Limit",
-            message="Enter daily limit in minutes:",
+            message=f"Enter daily limit in minutes ({MIN_DAILY_LIMIT_MINUTES}-{MAX_DAILY_LIMIT_MINUTES}):",
             default_text=str(self.config.daily_limit_seconds // 60),
             ok="Save",
             cancel="Cancel",
@@ -286,8 +345,11 @@ class SocialLimiterApp(rumps.App):
         if response.clicked and response.text.strip():
             try:
                 minutes = int(response.text.strip())
-                if minutes < 1:
-                    raise ValueError("Must be at least 1 minute")
+
+                if minutes < MIN_DAILY_LIMIT_MINUTES:
+                    raise ValueError(f"Must be at least {MIN_DAILY_LIMIT_MINUTES} minute")
+                if minutes > MAX_DAILY_LIMIT_MINUTES:
+                    raise ValueError(f"Must be at most {MAX_DAILY_LIMIT_MINUTES} minutes (24 hours)")
 
                 self.config.daily_limit_seconds = minutes * 60
                 save_config(self.config)
@@ -305,7 +367,11 @@ class SocialLimiterApp(rumps.App):
 
     def _on_quit(self, _):
         """Handle Quit menu item."""
-        # Clean up: unblock sites before quitting
+        # Stop the timer first
+        if self.timer:
+            self.timer.stop()
+
+        # Clean up countdown window
         close_countdown_window()
 
         # Note: We intentionally leave blocks in place
@@ -317,6 +383,12 @@ class SocialLimiterApp(rumps.App):
 
 def main():
     """Entry point for the application."""
+    # Set up logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
     app = SocialLimiterApp()
     app.run()
 
