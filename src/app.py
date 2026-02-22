@@ -61,10 +61,7 @@ def is_valid_domain(domain: str) -> bool:
         return False
 
     # Additional safety: no control characters or whitespace
-    if any(c.isspace() or ord(c) < 32 for c in domain):
-        return False
-
-    return True
+    return not any(c.isspace() or ord(c) < 32 for c in domain)
 
 
 class SocialLimiterApp(rumps.App):

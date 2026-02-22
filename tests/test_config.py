@@ -1,18 +1,13 @@
 """Tests for configuration module."""
 
-import json
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from src.config import (
     BlockedSite,
     Config,
-    add_blocked_site,
     load_config,
-    remove_blocked_site,
     save_config,
 )
 
@@ -115,25 +110,29 @@ class TestConfigPersistence:
 
     def test_load_config_creates_defaults(self):
         """Test that loading config creates defaults when file doesn't exist."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("src.config.get_config_dir", return_value=Path(tmpdir)):
-                config = load_config()
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("src.config.get_config_dir", return_value=Path(tmpdir)),
+        ):
+            config = load_config()
 
-                assert config.daily_limit_seconds == 1800
-                assert len(config.blocked_sites) > 0
+            assert config.daily_limit_seconds == 1800
+            assert len(config.blocked_sites) > 0
 
     def test_save_and_load_config(self):
         """Test saving and loading config."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("src.config.get_config_dir", return_value=Path(tmpdir)):
-                original = Config(
-                    daily_limit_seconds=7200,
-                    blocked_sites=[BlockedSite("test.com")],
-                )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("src.config.get_config_dir", return_value=Path(tmpdir)),
+        ):
+            original = Config(
+                daily_limit_seconds=7200,
+                blocked_sites=[BlockedSite("test.com")],
+            )
 
-                save_config(original)
-                loaded = load_config()
+            save_config(original)
+            loaded = load_config()
 
-                assert loaded.daily_limit_seconds == 7200
-                assert len(loaded.blocked_sites) == 1
-                assert loaded.blocked_sites[0].domain == "test.com"
+            assert loaded.daily_limit_seconds == 7200
+            assert len(loaded.blocked_sites) == 1
+            assert loaded.blocked_sites[0].domain == "test.com"

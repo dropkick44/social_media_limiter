@@ -1,6 +1,5 @@
 """Tests for browser tracking module."""
 
-import pytest
 
 from src.tracker import extract_domain, is_blocked_site
 

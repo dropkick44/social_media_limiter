@@ -187,11 +187,9 @@ def is_blocked_site(url: str, blocked_domains: list[str]) -> bool:
         return True
 
     # Check if domain ends with a blocked domain (handles subdomains)
-    for blocked in blocked_domains:
-        if domain == blocked or domain.endswith(f".{blocked}"):
-            return True
-
-    return False
+    return any(
+        domain == blocked or domain.endswith(f".{blocked}") for blocked in blocked_domains
+    )
 
 
 def check_current_activity(blocked_domains: list[str]) -> bool:

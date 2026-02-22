@@ -1,12 +1,9 @@
 """Tests for state management module."""
 
-import json
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 from src.state import (
     State,
@@ -116,30 +113,34 @@ class TestStatePersistence:
 
     def test_load_state_creates_fresh(self):
         """Test that loading state creates fresh state when file doesn't exist."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("src.state.get_config_dir", return_value=Path(tmpdir)):
-                with patch("src.config.get_config_dir", return_value=Path(tmpdir)):
-                    state = load_state()
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("src.state.get_config_dir", return_value=Path(tmpdir)),
+            patch("src.config.get_config_dir", return_value=Path(tmpdir)),
+        ):
+            state = load_state()
 
-                    assert state.remaining_seconds == 1800  # Default limit
-                    assert state.is_blocked is False
+            assert state.remaining_seconds == 1800  # Default limit
+            assert state.is_blocked is False
 
     def test_save_and_load_state(self):
         """Test saving and loading state."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("src.state.get_config_dir", return_value=Path(tmpdir)):
-                with patch("src.config.get_config_dir", return_value=Path(tmpdir)):
-                    now = datetime.now()
-                    original = State(
-                        remaining_seconds=500,
-                        last_active=now,
-                        next_reset=now + timedelta(hours=6),
-                        is_blocked=True,
-                        override_active_until=None,
-                    )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("src.state.get_config_dir", return_value=Path(tmpdir)),
+            patch("src.config.get_config_dir", return_value=Path(tmpdir)),
+        ):
+            now = datetime.now()
+            original = State(
+                remaining_seconds=500,
+                last_active=now,
+                next_reset=now + timedelta(hours=6),
+                is_blocked=True,
+                override_active_until=None,
+            )
 
-                    save_state(original)
-                    loaded = load_state()
+            save_state(original)
+            loaded = load_state()
 
-                    assert loaded.remaining_seconds == 500
-                    assert loaded.is_blocked is True
+            assert loaded.remaining_seconds == 500
+            assert loaded.is_blocked is True
