@@ -120,6 +120,62 @@ def get_active_arc_url() -> str | None:
         return None
 
 
+def get_active_brave_url() -> str | None:
+    """Get the URL of the active Brave browser tab."""
+    script = '''
+    tell application "System Events"
+        if (name of processes) contains "Brave Browser" then
+            tell application "Brave Browser"
+                if (count of windows) > 0 then
+                    return URL of active tab of front window
+                end if
+            end tell
+        end if
+    end tell
+    return ""
+    '''
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        url = result.stdout.strip()
+        return url if url else None
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        return None
+
+
+def get_active_edge_url() -> str | None:
+    """Get the URL of the active Microsoft Edge tab."""
+    script = '''
+    tell application "System Events"
+        if (name of processes) contains "Microsoft Edge" then
+            tell application "Microsoft Edge"
+                if (count of windows) > 0 then
+                    return URL of active tab of front window
+                end if
+            end tell
+        end if
+    end tell
+    return ""
+    '''
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        url = result.stdout.strip()
+        return url if url else None
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        return None
+
+
 def get_frontmost_app() -> str | None:
     """Get the name of the frontmost application."""
     script = '''
@@ -151,8 +207,12 @@ def get_active_browser_url() -> str | None:
 
     if "safari" in frontmost_lower:
         return get_active_safari_url()
+    elif "brave" in frontmost_lower:
+        return get_active_brave_url()
     elif "chrome" in frontmost_lower:
         return get_active_chrome_url()
+    elif "edge" in frontmost_lower:
+        return get_active_edge_url()
     elif "firefox" in frontmost_lower:
         return get_active_firefox_url()
     elif "arc" in frontmost_lower:
@@ -192,13 +252,42 @@ def is_blocked_site(url: str, blocked_domains: list[str]) -> bool:
     )
 
 
-def check_current_activity(blocked_domains: list[str]) -> bool:
-    """Check if user is currently on a blocked site.
+def get_all_browser_urls() -> list[str]:
+    """Get URLs from all running browsers, not just the frontmost one.
 
-    Returns True if currently on a blocked site.
+    This allows tracking time even when the browser is in the background
+    (e.g., YouTube playing while user is in another app).
     """
-    url = get_active_browser_url()
-    if url is None:
-        return False
+    urls = []
 
-    return is_blocked_site(url, blocked_domains)
+    # Check each browser that might be running
+    browser_checks = [
+        get_active_safari_url,
+        get_active_chrome_url,
+        get_active_brave_url,
+        get_active_edge_url,
+        get_active_arc_url,
+        # Firefox excluded due to limited AppleScript support
+    ]
+
+    for get_url in browser_checks:
+        try:
+            url = get_url()
+            if url:
+                urls.append(url)
+        except Exception:
+            continue
+
+    return urls
+
+
+def check_current_activity(blocked_domains: list[str]) -> bool:
+    """Check if user is currently on a blocked site in ANY browser.
+
+    Returns True if any running browser has a blocked site open.
+    This includes browsers in the background (e.g., YouTube playing
+    while user is in another app).
+    """
+    # Check all running browsers
+    urls = get_all_browser_urls()
+    return any(is_blocked_site(url, blocked_domains) for url in urls)

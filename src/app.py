@@ -15,6 +15,7 @@ from .state import (
     get_override_remaining_seconds,
     is_override_active,
     load_state,
+    save_state,
 )
 from .tracker import check_current_activity
 
@@ -117,7 +118,9 @@ class SocialLimiterApp(rumps.App):
 
     def _update_blocked_sites_menu(self):
         """Update the blocked sites submenu."""
-        self.blocked_sites_menu.clear()
+        # Only clear if menu has been initialized (has _menu attribute)
+        if hasattr(self.blocked_sites_menu, "_menu") and self.blocked_sites_menu._menu:
+            self.blocked_sites_menu.clear()
 
         if not self.config.blocked_sites:
             self.blocked_sites_menu.add(rumps.MenuItem("No sites configured"))
@@ -131,9 +134,14 @@ class SocialLimiterApp(rumps.App):
     def _update_display(self):
         """Update the menu bar icon and menu items."""
         self.state = load_state()
+        daily_limit = self.config.daily_limit_seconds
+
+        # Ensure remaining_seconds doesn't exceed daily_limit
+        # (can happen if user reduced daily limit after state was created)
+        effective_remaining = min(self.state.remaining_seconds, daily_limit)
 
         # Update time remaining display
-        time_str = format_time(self.state.remaining_seconds)
+        time_str = format_time(effective_remaining)
 
         if self.state.is_blocked:
             if is_override_active():
@@ -144,7 +152,7 @@ class SocialLimiterApp(rumps.App):
                 self.time_remaining_item.title = "○ Blocked (0:00 remaining)"
                 self.title = ICON_BLOCKED
             self.override_item.set_callback(self._on_request_override)
-        elif self.state.remaining_seconds <= WARNING_THRESHOLD_SECONDS:
+        elif effective_remaining <= WARNING_THRESHOLD_SECONDS:
             self.time_remaining_item.title = f"◐ {time_str} remaining"
             self.title = ICON_WARNING
             self.override_item.set_callback(None)  # Disable when not blocked
@@ -153,10 +161,11 @@ class SocialLimiterApp(rumps.App):
             self.title = ICON_ACTIVE
             self.override_item.set_callback(None)  # Disable when not blocked
 
-        # Update usage
-        daily_limit = self.config.daily_limit_seconds
-        used = daily_limit - self.state.remaining_seconds
-        self.usage_item.title = f"Today's usage: {format_time(max(0, used))}"
+        # Update usage - calculate based on effective remaining
+        used = daily_limit - effective_remaining
+        # Ensure used is between 0 and daily_limit
+        used = max(0, min(used, daily_limit))
+        self.usage_item.title = f"Today's usage: {format_time(used)}"
 
     def _sync_blocking_state(self):
         """Ensure /etc/hosts matches our state."""
@@ -348,8 +357,32 @@ class SocialLimiterApp(rumps.App):
                 if minutes > MAX_DAILY_LIMIT_MINUTES:
                     raise ValueError(f"Must be at most {MAX_DAILY_LIMIT_MINUTES} minutes (24 hours)")
 
-                self.config.daily_limit_seconds = minutes * 60
+                old_limit = self.config.daily_limit_seconds
+                new_limit = minutes * 60
+
+                self.config.daily_limit_seconds = new_limit
                 save_config(self.config)
+
+                # Ask if user wants to reset remaining time to new limit
+                if old_limit != new_limit:
+                    reset_response = rumps.alert(
+                        title="Reset Remaining Time?",
+                        message=(
+                            f"New daily limit: {minutes} minutes.\n\n"
+                            f"Do you want to reset your remaining time to {minutes} minutes?\n\n"
+                            f"(Otherwise, current remaining time will be kept until midnight)"
+                        ),
+                        ok="Reset Time",
+                        cancel="Keep Current",
+                    )
+
+                    if reset_response == 1:  # Reset clicked
+                        self.state.remaining_seconds = new_limit
+                        self.state.is_blocked = False
+                        save_state(self.state)
+                        self._sync_blocking_state()
+
+                self._update_display()
 
                 rumps.notification(
                     title="Settings Saved",
