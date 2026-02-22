@@ -1,14 +1,21 @@
 # Social Media Limiter
 
+**Version 0.2.0** | **Status: Python Prototype (Functional)**
+
 A macOS menu bar app that helps you limit time spent on addictive social media and streaming websites.
 
 ## Features
 
 - **System-level blocking** via `/etc/hosts` - works across all browsers
 - **Daily time budget** - shared pool across all blocked sites
+- **Background tracking** - monitors all browsers, even when not in focus
 - **Override mechanism** - emergency access with time-delayed friction
-- **Browser detection** - tracks time only when you're actively browsing blocked sites
+- **Browser detection** - tracks time when browsing blocked sites
 - **Sleep/shutdown aware** - correctly resets at midnight even if your Mac was off
+
+## Supported Browsers
+
+Safari, Chrome, Brave, Edge, Arc (Firefox has limited support)
 
 ## Installation
 
